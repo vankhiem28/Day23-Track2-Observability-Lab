@@ -1,0 +1,146 @@
+{{- if .Values.components.otelCollector -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "day23-obs.fullname" . }}-otel-collector-config
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+data:
+  otel-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: otel-collector
+              scrape_interval: 15s
+              static_configs:
+                - targets: ['localhost:8888']
+    processors:
+      batch:
+        send_batch_size: 1024
+        timeout: 5s
+      tail_sampling:
+        decision_wait: 30s
+        num_traces: 50000
+        expected_new_traces_per_sec: 100
+        policies:
+          - name: keep-errors
+            type: status_code
+            status_code: { status_codes: [ERROR] }
+          - name: keep-slow
+            type: latency
+            latency: { threshold_ms: 2000 }
+          - name: probabilistic-1pct
+            type: probabilistic
+            probabilistic: { sampling_percentage: 1 }
+      resource:
+        attributes:
+          - key: deployment.environment
+            value: lab
+            action: upsert
+    exporters:
+      otlp/jaeger:
+        endpoint: jaeger:4317
+        tls:
+          insecure: true
+      debug:
+        verbosity: basic
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [tail_sampling, resource, batch]
+          exporters: [otlp/jaeger]
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [resource, batch]
+          exporters: [debug]
+      telemetry:
+        logs:
+          level: warn
+        metrics:
+          address: 0.0.0.0:8888
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: otel-collector
+    tier: monitoring
+spec:
+  replicas: {{ .Values.otelCollector.replicas }}
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        {{- include "day23-obs.labels" . | nindent 8 }}
+        app: otel-collector
+        tier: monitoring
+    spec:
+      containers:
+        - name: otel-collector
+          image: {{ .Values.otelCollector.image }}
+          args:
+            - --config=/etc/otelcol-contrib/config.yaml
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: self-metrics
+              containerPort: 8888
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol-contrib/config.yaml
+              subPath: otel-config.yaml
+          readinessProbe:
+            httpGet: { path: /metrics, port: self-metrics }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /metrics, port: self-metrics }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.otelCollector.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "day23-obs.fullname" . }}-otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: otel-collector
+spec:
+  type: ClusterIP
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: self-metrics
+      port: 8888
+      targetPort: self-metrics
+{{- end }}

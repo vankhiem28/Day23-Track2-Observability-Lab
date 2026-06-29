@@ -1,0 +1,124 @@
+{{- if .Values.components.alertmanager -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "day23-obs.fullname" . }}-alertmanager-config
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 1m
+    route:
+      receiver: 'slack-default'
+      group_by: ['alertname', 'service']
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      routes:
+        - matchers:
+            - severity = "critical"
+          receiver: 'slack-critical'
+          continue: true
+        - matchers:
+            - severity = "warning"
+          receiver: 'slack-default'
+    receivers:
+      - name: 'slack-default'
+        webhook_configs:
+          - url: '{{ .Values.alertmanager.slackWebhookUrl }}'
+            send_resolved: true
+      - name: 'slack-critical'
+        webhook_configs:
+          - url: '{{ .Values.alertmanager.slackWebhookUrl }}'
+            send_resolved: true
+    inhibit_rules:
+      - source_matchers:
+          - alertname = "InferencePodDown"
+        target_matchers:
+          - severity = "warning"
+        equal: [service]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: alertmanager
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: alertmanager
+    tier: monitoring
+spec:
+  serviceName: alertmanager
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        {{- include "day23-obs.labels" . | nindent 8 }}
+        app: alertmanager
+        tier: monitoring
+    spec:
+      containers:
+        - name: alertmanager
+          image: {{ .Values.alertmanager.image }}
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+          ports:
+            - name: http
+              containerPort: 9093
+          env:
+            - name: SLACK_WEBHOOK_URL
+              value: {{ .Values.alertmanager.slackWebhookUrl | quote }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+            - name: data
+              mountPath: /alertmanager
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "day23-obs.fullname" . }}-alertmanager-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.alertmanager.storageSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: alertmanager
+spec:
+  type: ClusterIP
+  selector:
+    app: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: http
+{{- end }}

@@ -1,0 +1,221 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-alloy
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: grafana-alloy
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/proxy, nodes/stats, namespaces, pods, pods/log]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [configmaps, events, endpoints, services]
+    verbs: [get, list, watch]
+  - nonResourceURLs: [/metrics, /healthz]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-alloy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: grafana-alloy
+subjects:
+  - kind: ServiceAccount
+    name: grafana-alloy
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alloy-config
+  namespace: monitoring
+data:
+  config.alloy: |
+    discovery.kubernetes "k8s_pods" {
+      role = "pod"
+    }
+
+    discovery.relabel "k8s_pods" {
+      targets = discovery.kubernetes.k8s_pods.targets
+
+      rule {
+        action        = "replace"
+        source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_name", "__meta_kubernetes_pod_uid"]
+        separator     = "_"
+        target_label  = "pod_log_dir"
+      }
+
+      rule {
+        action        = "replace"
+        source_labels = ["pod_log_dir", "__meta_kubernetes_pod_container_name"]
+        separator     = "/"
+        target_label  = "__path__"
+        replacement   = "/var/log/pods/$0/0.log"
+      }
+
+      // Only keep the labels we want to ship (Loki has a 15-label limit).
+      rule {
+        action        = "keep"
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "monitoring|cert-manager|kube-system"
+      }
+
+      rule {
+        action        = "replace"
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        action        = "replace"
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        action        = "replace"
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+    }
+
+    loki.source.file "pods" {
+      targets    = discovery.relabel.k8s_pods.output
+      forward_to = [loki.process.logs.receiver]
+    }
+
+    loki.process "logs" {
+      forward_to = [loki.write.loki.receiver]
+
+      stage.static_labels {
+        values = {
+          env = "lab",
+        }
+      }
+
+      stage.json {
+        expressions = {
+          trace_id = "trace_id",
+          level    = "level",
+        }
+      }
+
+      stage.labels {
+        values = {
+          level = "",
+        }
+      }
+    }
+
+    loki.write "loki" {
+      endpoint {
+        url = "http://loki:3100/loki/api/v1/push"
+        max_backoff_period = "5m"
+      }
+    }
+
+    prometheus.exporter.self "alloy" {}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: grafana-alloy
+  namespace: monitoring
+  labels:
+    app: grafana-alloy
+    tier: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: grafana-alloy
+  template:
+    metadata:
+      labels:
+        app: grafana-alloy
+        tier: monitoring
+    spec:
+      serviceAccountName: grafana-alloy
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.4.2
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy/data
+            - --server.http.listen-addr=0.0.0.0:12345
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: 12345
+              name: metrics
+          readinessProbe:
+            httpGet: { path: /-/ready, port: metrics }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: metrics }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+            - name: data
+              mountPath: /var/lib/alloy/data
+            - name: logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: containers
+              mountPath: /var/log/containers
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: grafana-alloy-config
+        - name: data
+          hostPath:
+            path: /var/lib/alloy/data
+            type: DirectoryOrCreate
+        - name: logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: containers
+          hostPath:
+            path: /var/log/containers
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-alloy
+  namespace: monitoring
+  labels:
+    app: grafana-alloy
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: grafana-alloy
+  ports:
+    - name: metrics
+      port: 12345
+      targetPort: metrics

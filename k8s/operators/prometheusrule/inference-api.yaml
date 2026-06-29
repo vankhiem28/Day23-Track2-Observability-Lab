@@ -1,0 +1,73 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: inference-api-rules
+  namespace: monitoring
+  labels:
+    app: inference-api
+    release: kube-prom-stack
+spec:
+  groups:
+    - name: inference-api.slo
+      interval: 30s
+      rules:
+        - record: inference:fail_ratio:rate5m
+          expr: |
+            sum(rate(inference_requests_total{status="error",app="inference-api"}[5m]))
+            /
+            sum(rate(inference_requests_total{app="inference-api"}[5m]))
+
+        - record: inference:fail_ratio:rate1h
+          expr: |
+            sum(rate(inference_requests_total{status="error",app="inference-api"}[1h]))
+            /
+            sum(rate(inference_requests_total{app="inference-api"}[1h]))
+
+        - alert: HighErrorBurnRate
+          expr: |
+            (sum(rate(inference_requests_total{status=~"5..",app="inference-api"}[5m]))
+             / sum(rate(inference_requests_total{app="inference-api"}[5m]))) > 0.05
+          for: 5m
+          labels:
+            severity: page
+            service: inference-api
+          annotations:
+            summary: "Error budget burning at >5% over 5m"
+            description: "5m error ratio exceeds 5% threshold (10x normal). Investigate immediately."
+            runbook_url: "https://wiki.example/runbooks/inference-error-burn"
+
+        - alert: InferencePodDown
+          expr: up{job="inference-api",namespace="monitoring"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            service: inference-api
+          annotations:
+            summary: "inference-api is not being scraped (target down)"
+
+    - name: inference-api.tokens
+      interval: 30s
+      rules:
+        - alert: TokenSpikeAnomaly
+          expr: |
+            rate(inference_tokens_total[5m]) > 100
+          for: 10m
+          labels:
+            severity: warning
+            service: inference-api
+          annotations:
+            summary: "Inference token rate > 100 tok/s sustained 10m"
+            description: "Sustained token throughput spike. Check for runaway clients or batch jobs."
+
+    - name: inference-api.quality
+      interval: 30s
+      rules:
+        - alert: QualityScoreDropped
+          expr: avg(inference_quality_score) < 0.5
+          for: 5m
+          labels:
+            severity: warning
+            service: inference-api
+          annotations:
+            summary: "Inference quality score below 0.5 (avg)"

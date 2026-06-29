@@ -1,0 +1,187 @@
+{{- if .Values.components.prometheus -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "day23-obs.fullname" . }}-prometheus-config
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: {{ .Values.prometheus.scrapeInterval }}
+      evaluation_interval: {{ .Values.prometheus.evaluationInterval }}
+      external_labels:
+        cluster: {{ .Values.prometheus.externalLabels.cluster }}
+        env: {{ .Values.prometheus.externalLabels.env }}
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager:9093']
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      - job_name: 'inference-api'
+        static_configs:
+          - targets: ['inference-api:8000']
+        metrics_path: /metrics
+
+      - job_name: 'otel-collector'
+        static_configs:
+          - targets: ['otel-collector:8888']
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "day23-obs.fullname" . }}-prometheus-rules
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+data:
+  slo-burn-rate.yml: |
+    groups:
+      - name: slo-burn-rate
+        interval: 30s
+        rules:
+          - record: inference:fail_ratio:rate5m
+            expr: |
+              sum(rate(inference_requests_total{status="error"}[5m]))
+              /
+              sum(rate(inference_requests_total[5m]))
+          - record: inference:fail_ratio:rate30m
+            expr: |
+              sum(rate(inference_requests_total{status="error"}[30m]))
+              /
+              sum(rate(inference_requests_total[30m]))
+          - record: inference:fail_ratio:rate1h
+            expr: |
+              sum(rate(inference_requests_total{status="error"}[1h]))
+              /
+              sum(rate(inference_requests_total[1h]))
+          - record: inference:fail_ratio:rate6h
+            expr: |
+              sum(rate(inference_requests_total{status="error"}[6h]))
+              /
+              sum(rate(inference_requests_total[6h]))
+          - alert: SLOFastBurn
+            expr: |
+              inference:fail_ratio:rate5m  > (14.4 * 0.005)
+              and
+              inference:fail_ratio:rate1h  > (14.4 * 0.005)
+            for: 2m
+            labels: { severity: critical, service: inference-api }
+            annotations:
+              summary: "SLO fast burn: error budget consumed > 14.4x normal"
+          - alert: SLOSlowBurn
+            expr: |
+              inference:fail_ratio:rate30m > (6 * 0.005)
+              and
+              inference:fail_ratio:rate6h  > (6 * 0.005)
+            for: 15m
+            labels: { severity: warning, service: inference-api }
+            annotations:
+              summary: "SLO slow burn: error budget consumed > 6x normal"
+          - alert: InferencePodDown
+            expr: up{job="inference-api"} == 0
+            for: 2m
+            labels: { severity: critical, service: inference-api }
+            annotations:
+              summary: "inference-api is not being scraped (target down)"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: prometheus
+    tier: monitoring
+spec:
+  serviceName: prometheus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        {{- include "day23-obs.labels" . | nindent 8 }}
+        app: prometheus
+        tier: monitoring
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: prometheus
+          image: {{ .Values.prometheus.image }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time={{ .Values.prometheus.retention }}
+            - --web.enable-lifecycle
+            - --enable-feature=exemplar-storage
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.prometheus.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "day23-obs.fullname" . }}-prometheus-config
+        - name: rules
+          configMap:
+            name: {{ include "day23-obs.fullname" . }}-prometheus-rules
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.prometheus.storageSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: prometheus
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+{{- end }}

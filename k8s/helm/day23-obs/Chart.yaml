@@ -1,0 +1,16 @@
+apiVersion: v2
+name: day23-obs
+description: Day23 observability stack - app + Prometheus + Grafana + Loki + Jaeger + OTel + Alertmanager
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - observability
+  - prometheus
+  - grafana
+  - loki
+  - jaeger
+  - otel
+maintainers:
+  - name: day23
+home: https://github.com/day23/track2

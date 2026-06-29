@@ -1,0 +1,117 @@
+---
+## C2.1 — Single-shot research agent as a Kubernetes Job.
+## Wraps the research-agent Docker image; emits OTel spans to the
+## OTel Collector in monitoring namespace; can be re-run with new
+## TASK / ITERATIONS env to test the agent loop under different inputs.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: research-agent-run-001
+  namespace: agents
+  labels:
+    app: research-agent
+    agent.task_type: research
+    release: kube-prom-stack
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: research-agent
+        agent.task_type: research
+        release: kube-prom-stack
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8000"
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: agent
+          image: day23-research-agent:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://gateway-collector.monitoring:4317"  # OTel Operator gateway (with agent-aware sampling)
+            - name: OTEL_SERVICE_NAME
+              value: "research-agent"
+            - name: INFERENCE_URL
+              value: "http://inference-api.monitoring:8000/predict"
+            - name: TASK
+              value: "Research: top 5 vector databases in 2026"
+            - name: ITERATIONS
+              value: "3"
+            - name: RUN_ID
+              value: "run-001"
+            - name: DEPLOY_ENV
+              value: "lab"
+          args:
+            - "--task"
+            - "Research: top 5 vector databases in 2026"
+            - "--iterations"
+            - "3"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+## CronJob variant: runs every 10 minutes (lab demo).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: research-agent-cron
+  namespace: agents
+  labels:
+    app: research-agent
+    agent.task_type: research
+spec:
+  schedule: "*/10 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            app: research-agent
+            agent.task_type: research
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: agent
+              image: day23-research-agent:local
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: "http://gateway-collector.monitoring:4317"
+                - name: OTEL_SERVICE_NAME
+                  value: "research-agent-cron"
+                - name: INFERENCE_URL
+                  value: "http://inference-api.monitoring:8000/predict"
+                - name: TASK
+                  value: "Daily summary: recent observability tooling releases"
+                - name: ITERATIONS
+                  value: "2"
+                - name: RUN_ID
+                  value: "cron-$(date +%s)"
+                - name: DEPLOY_ENV
+                  value: "lab"
+              args:
+                - "--task"
+                - "Daily summary: recent observability tooling releases"
+                - "--iterations"
+                - "2"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi

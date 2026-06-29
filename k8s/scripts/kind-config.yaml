@@ -1,0 +1,17 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: day23-obs
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 31300   # Grafana (host 31300 → container 3000)
+        protocol: TCP
+      - containerPort: 30081
+        hostPort: 31800   # App / vLLM
+        protocol: TCP
+      - containerPort: 30082
+        hostPort: 31668   # Jaeger UI
+        protocol: TCP
+  - role: worker
+  - role: worker

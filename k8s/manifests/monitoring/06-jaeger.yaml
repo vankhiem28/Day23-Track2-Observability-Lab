@@ -1,0 +1,66 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: monitoring
+  labels:
+    app: jaeger
+    tier: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+        tier: monitoring
+    spec:
+      containers:
+        - name: jaeger
+          image: jaegertracing/all-in-one:1.62.0
+          ports:
+            - name: ui
+              containerPort: 16686
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          env:
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+          readinessProbe:
+            httpGet: { path: /, port: ui }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: monitoring
+  labels:
+    app: jaeger
+spec:
+  type: ClusterIP
+  selector:
+    app: jaeger
+  ports:
+    - name: ui
+      port: 16686
+      targetPort: ui
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http

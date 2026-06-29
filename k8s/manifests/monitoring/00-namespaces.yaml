@@ -1,0 +1,24 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+    purpose: observability
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: serving
+  labels:
+    name: serving
+    purpose: ai-model-serving
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agents
+  labels:
+    name: agents
+    purpose: agent-workloads

@@ -1,0 +1,43 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: agent-rules
+  namespace: agents
+  labels:
+    app: research-agent
+    release: kube-prom-stack
+spec:
+  groups:
+    - name: agent.slo
+      interval: 30s
+      rules:
+        - record: agent:tool_call_duration_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(agent_tool_call_duration_seconds_bucket[5m])) by (le, tool_name)
+            )
+
+        - record: agent:iterations_per_task:rate5m
+          expr: |
+            sum(rate(agent_iterations_total[5m])) by (task_type)
+
+        - alert: AgentTaskFailed
+          expr: |
+            rate(agent_tasks_failed_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Agent task failures detected"
+            description: "Agent task failure rate > 0 over 5m"
+
+        - alert: AgentStuckInLoop
+          expr: |
+            avg(agent_iterations_per_task) > 10
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Agent stuck in loop (>10 iterations/task)"
+            description: "Agent average iterations exceed 10 — likely stuck in infinite loop."

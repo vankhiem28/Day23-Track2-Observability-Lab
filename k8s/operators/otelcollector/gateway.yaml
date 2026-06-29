@@ -1,0 +1,104 @@
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: gateway
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    app.kubernetes.io/component: collector
+spec:
+  mode: deployment
+  replicas: 2
+  image: otel/opentelemetry-collector-contrib:0.114.0
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        send_batch_size: 1024
+        timeout: 5s
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      tail_sampling:
+        decision_wait: 30s
+        num_traces: 50000
+        expected_new_traces_per_sec: 100
+        policies:
+          - name: keep-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-slow
+            type: latency
+            latency:
+              threshold_ms: 2000
+          - name: keep-agents
+            type: string_attribute
+            string_attribute:
+              key: service.name
+              values: [research-agent, research-agent-cron]
+          - name: probabilistic-1pct
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: 1
+      resource:
+        attributes:
+          - key: deployment.environment
+            value: lab
+            action: upsert
+
+    exporters:
+      otlp/jaeger:
+        endpoint: jaeger:4317
+        tls:
+          insecure: true
+      prometheusremotewrite:
+        endpoint: http://kube-prom-stack-kube-prome-prometheus:9090/api/v1/write
+        tls:
+          insecure: true
+        resource_to_telemetry_conversion:
+          enabled: true
+
+    service:
+      telemetry:
+        logs:
+          level: warn
+        metrics:
+          address: 0.0.0.0:8888
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, tail_sampling, resource, batch]
+          exporters: [otlp/jaeger]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheusremotewrite]
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      protocol: TCP
+    - name: self-metrics
+      port: 8888
+      protocol: TCP

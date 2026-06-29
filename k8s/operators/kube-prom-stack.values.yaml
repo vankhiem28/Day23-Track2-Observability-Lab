@@ -1,0 +1,62 @@
+## kube-prometheus-stack values override
+## Lab-grade: minimal footprint, no persistent storage for prometheus,
+## in-cluster Grafana with anonymous viewer access.
+
+prometheus:
+  prometheusSpec:
+    replicas: 1
+    retention: 7d
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1
+        memory: 1Gi
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+
+alertmanager:
+  alertmanagerSpec:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+grafana:
+  enabled: true
+  adminPassword: "lab123"
+  service:
+    type: ClusterIP
+  anonymous:
+    enabled: true
+    org_role: Viewer
+  defaultDashboardsEnabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+kube-state-metrics:
+  enabled: true
+
+nodeExporter:
+  enabled: true
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi

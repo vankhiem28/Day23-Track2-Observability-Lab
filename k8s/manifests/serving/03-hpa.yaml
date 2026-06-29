@@ -1,0 +1,40 @@
+## B4.2 — HorizontalPodAutoscaler on custom metric (p95 latency)
+## Scales the vllm-mock Deployment based on the 95th-percentile request
+## latency exposed by the prometheus-adapter.
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vllm-mock
+  namespace: serving
+  labels:
+    app: vllm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vllm-mock
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    # Scale up if average p95 latency exceeds 2 seconds.
+    - type: Pods
+      pods:
+        metric:
+          name: inference_latency_seconds_p95
+        target:
+          type: AverageValue
+          averageValue: "2"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60

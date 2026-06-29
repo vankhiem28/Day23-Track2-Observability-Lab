@@ -1,0 +1,118 @@
+{{- if .Values.components.loki -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "day23-obs.fullname" . }}-loki-config
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+data:
+  loki-config.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+      log_level: warn
+    common:
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        instance_addr: 127.0.0.1
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      retention_period: {{ .Values.loki.retentionPeriod }}
+      ingestion_rate_mb: 10
+      ingestion_burst_size_mb: 20
+      reject_old_samples: true
+      reject_old_samples_max_age: {{ .Values.loki.retentionPeriod }}
+    compactor:
+      working_directory: /loki/compactor
+      compaction_interval: 10m
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: loki
+    tier: monitoring
+spec:
+  serviceName: loki
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        {{- include "day23-obs.labels" . | nindent 8 }}
+        app: loki
+        tier: monitoring
+    spec:
+      containers:
+        - name: loki
+          image: {{ .Values.loki.image }}
+          args:
+            - -config.file=/etc/loki/local-config.yaml
+          ports:
+            - name: http
+              containerPort: 3100
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki/local-config.yaml
+              subPath: loki-config.yaml
+            - name: data
+              mountPath: /loki
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.loki.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "day23-obs.fullname" . }}-loki-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.loki.storageSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: loki
+spec:
+  type: ClusterIP
+  selector:
+    app: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: http
+{{- end }}

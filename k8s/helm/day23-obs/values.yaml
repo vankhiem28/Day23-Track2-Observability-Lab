@@ -1,0 +1,91 @@
+# Default values for day23-obs chart.
+# Override per environment with: helm install ... --set key=value or -f values-prod.yaml
+
+namespace: monitoring
+
+# Toggle individual components
+components:
+  app: true
+  prometheus: true
+  alertmanager: true
+  grafana: true
+  loki: true
+  jaeger: true
+  otelCollector: true
+
+image:
+  pullPolicy: IfNotPresent
+
+# ---- App (inference-api) ----
+app:
+  image: day23-inference-api:local
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+  otlpEndpoint: "http://otel-collector:4317"
+
+# ---- Prometheus ----
+prometheus:
+  image: prom/prometheus:v2.55.0
+  version: v2.55.0
+  retention: 7d
+  storageSize: 10Gi
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits:   { cpu: 1,    memory: 1Gi }
+  scrapeInterval: 15s
+  evaluationInterval: 15s
+  externalLabels:
+    cluster: aicb-day23-k8s
+    env: lab
+
+# ---- Alertmanager ----
+alertmanager:
+  image: prom/alertmanager:v0.27.0
+  version: v0.27.0
+  storageSize: 1Gi
+  slackWebhookUrl: "https://hooks.slack.com/services/REPLACE/ME"
+
+# ---- Grafana ----
+grafana:
+  image: grafana/grafana:11.3.0
+  version: 11.3.0
+  adminUser: admin
+  adminPassword: "lab123"
+  anonymousEnabled: true
+  anonymousRole: Viewer
+  storageSize: 2Gi
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+# ---- Loki ----
+loki:
+  image: grafana/loki:3.3.0
+  version: 3.3.0
+  storageSize: 5Gi
+  retentionPeriod: 168h
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+
+# ---- Jaeger ----
+jaeger:
+  image: jaegertracing/all-in-one:1.62.0
+  version: 1.62.0
+  otlpEnabled: true
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+
+# ---- OTel Collector ----
+otelCollector:
+  image: otel/opentelemetry-collector-contrib:0.114.0
+  version: 0.114.0
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+storageClass: standard

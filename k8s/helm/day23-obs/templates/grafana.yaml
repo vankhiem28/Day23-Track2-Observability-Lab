@@ -1,0 +1,142 @@
+{{- if .Values.components.grafana -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "day23-obs.fullname" . }}-grafana-datasources
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+data:
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: 15s
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: jaeger
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+        editable: false
+      - name: Jaeger
+        uid: jaeger
+        type: jaeger
+        access: proxy
+        url: http://jaeger:16686
+        editable: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "day23-obs.fullname" . }}-grafana-admin
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  admin-user: {{ .Values.grafana.adminUser | quote }}
+  admin-password: {{ .Values.grafana.adminPassword | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: grafana
+    tier: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        {{- include "day23-obs.labels" . | nindent 8 }}
+        app: grafana
+        tier: monitoring
+    spec:
+      securityContext:
+        fsGroup: 472
+      containers:
+        - name: grafana
+          image: {{ .Values.grafana.image }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "day23-obs.fullname" . }}-grafana-admin
+                  key: admin-user
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "day23-obs.fullname" . }}-grafana-admin
+                  key: admin-password
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: {{ .Values.grafana.anonymousEnabled | quote }}
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: {{ .Values.grafana.anonymousRole | quote }}
+            - name: GF_FEATURE_TOGGLES_ENABLE
+              value: "traceqlEditor"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: data
+              mountPath: /var/lib/grafana
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.grafana.resources | nindent 12 }}
+      volumes:
+        - name: datasources
+          configMap:
+            name: {{ include "day23-obs.fullname" . }}-grafana-datasources
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: {{ include "day23-obs.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.grafana.storageSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: {{ include "day23-obs.namespace" . }}
+  labels:
+    {{- include "day23-obs.labels" . | nindent 4 }}
+    app: grafana
+spec:
+  type: ClusterIP
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+{{- end }}

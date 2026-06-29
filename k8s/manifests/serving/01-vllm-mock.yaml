@@ -1,0 +1,135 @@
+## Track B — AI/LLM serving on k8s
+## We deploy a vLLM-compatible mock LLM server (Qwen 0.5B shape, CPU mode)
+## using the existing day23-inference-api image (OpenAI-style /v1/chat/completions).
+## This demonstrates the production patterns (Deployment, Service, ServiceMonitor,
+## PodMonitor, Ingress, HPA) without requiring GPU nodes or multi-GB model downloads.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-mock
+  namespace: serving
+  labels:
+    app: vllm
+    component: llm-server
+    release: kube-prom-stack
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+        component: llm-server
+        release: kube-prom-stack
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+        - name: vllm-mock
+          image: day23-inference-api:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.monitoring:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "vllm-mock"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=lab,model.name=Qwen2.5-0.5B-Instruct,service.namespace=aicb"
+          # Generous startup: even on CPU, model load can take 30-60s
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-mock
+  namespace: serving
+  labels:
+    app: vllm
+    component: llm-server
+    release: kube-prom-stack
+spec:
+  type: ClusterIP
+  selector:
+    app: vllm
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+## ServiceMonitor for kube-prometheus-stack to scrape vLLM
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vllm-mock
+  namespace: serving
+  labels:
+    app: vllm
+    release: kube-prom-stack
+spec:
+  namespaceSelector:
+    matchNames: [serving]
+  selector:
+    matchLabels:
+      app: vllm
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+---
+## Ingress to expose vLLM externally (kind: uses hostNetwork / NodePort)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vllm-mock
+  namespace: serving
+  labels:
+    app: vllm
+    release: kube-prom-stack
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "8000"
+spec:
+  rules:
+    - host: vllm.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vllm-mock
+                port:
+                  number: 8000

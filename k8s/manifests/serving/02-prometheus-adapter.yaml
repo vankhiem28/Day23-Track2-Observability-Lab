@@ -1,0 +1,188 @@
+## B4.2 — HorizontalPodAutoscaler on custom metric (p95 latency)
+## Requires prometheus-adapter to expose Prometheus query results as the
+## custom.metrics.k8s.io API.
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-adapter
+  namespace: monitoring
+data:
+  prometheus-adapter-config.yaml: |
+    rules:
+      # Expose vllm request p95 latency as a Pods metric.
+      # Source: inference_latency_seconds histogram (inference-api/vllm-mock share same metrics).
+      - seriesQuery: 'inference_latency_seconds_bucket{namespace="monitoring",pod!=""}'
+        resources:
+          overrides:
+            namespace: { resource: namespace }
+            pod: { resource: pod }
+        name:
+          matches: "^(.*)_bucket$"
+          as: "${1}_p95"
+        metricsQuery: 'histogram_quantile(0.95, sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (le, <<.GroupBy>>))'
+
+      # Average latency.
+      - seriesQuery: 'inference_latency_seconds_sum{namespace="monitoring",pod!=""}'
+        resources:
+          overrides:
+            namespace: { resource: namespace }
+            pod: { resource: pod }
+        name:
+          matches: "^(.*)_sum$"
+          as: "${1}_avg"
+        metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>) / sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
+
+      # Tokens/sec.
+      - seriesQuery: 'inference_tokens_total{namespace="monitoring",pod!=""}'
+        resources:
+          overrides:
+            namespace: { resource: namespace }
+        name:
+          matches: "^(.*)_total$"
+          as: "${1}_per_second"
+        metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-adapter
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-adapter
+rules:
+  - apiGroups: [""]
+    resources: [nodes, namespaces, configmaps]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions", "apps"]
+    resources: [deployments, replicasets]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["custom.metrics.k8s.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-adapter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-adapter
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-adapter
+    namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-adapter-auth
+  namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-adapter-auth
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-adapter
+    namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-adapter-auth
+  namespace: monitoring
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: ["prometheus-adapter"]
+    verbs: [get, list, watch]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-adapter
+  namespace: monitoring
+  labels:
+    app: prometheus-adapter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-adapter
+  template:
+    metadata:
+      labels:
+        app: prometheus-adapter
+    spec:
+      serviceAccountName: prometheus-adapter
+      containers:
+        - name: adapter
+          image: registry.k8s.io/prometheus-adapter/prometheus-adapter:v0.11.2
+          args:
+            - --secure-port=6443
+            - --cert-dir=/tmp/certs
+            - --prometheus-url=http://kube-prom-stack-kube-prome-prometheus.monitoring:9090/
+            - --config=/etc/adapter/config.yaml
+          ports:
+            - containerPort: 6443
+              name: https
+          volumeMounts:
+            - name: config
+              mountPath: /etc/adapter/config.yaml
+              subPath: prometheus-adapter-config.yaml
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-adapter
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta1.custom.metrics.k8s.io
+spec:
+  service:
+    name: prometheus-adapter
+    namespace: monitoring
+    port: 6443
+  group: custom.metrics.k8s.io
+  version: v1beta1
+  insecureSkipTLSVerify: true
+  groupPriorityMinimum: 100
+  versionPriority: 100
+---
+## Service exposing the adapter API
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-adapter
+  namespace: monitoring
+  labels:
+    app: prometheus-adapter
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus-adapter
+  ports:
+    - name: https
+      port: 6443
+      targetPort: 6443

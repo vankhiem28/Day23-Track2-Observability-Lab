@@ -1,0 +1,38 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: inference-api
+  namespace: monitoring
+  labels:
+    app: inference-api
+    release: kube-prom-stack
+spec:
+  namespaceSelector:
+    matchNames: [monitoring]
+  selector:
+    matchLabels:
+      app: inference-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+    release: kube-prom-stack
+spec:
+  namespaceSelector:
+    matchNames: [monitoring]
+  selector:
+    matchLabels:
+      app: otel-collector
+  endpoints:
+    - port: self-metrics
+      path: /metrics
+      interval: 15s
